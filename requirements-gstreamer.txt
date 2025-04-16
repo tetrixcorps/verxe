@@ -1,0 +1,2 @@
+# Placeholder for GStreamer service Python dependencies
+# Add libraries like kafka-python, etc., when needed 

@@ -1,56 +1,197 @@
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:14
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    env_file:
-      - ./.env
-    environment:
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_DB=${POSTGRES_DB}
+  # Web frontend (RingLight UI)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile # Assumes the Nginx-based Dockerfile
     ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - "80:80" # Map host port 80 to container port 80
+    depends_on:
+      - backend
+    networks:
+      - ringlight-network
 
+  # Backend API (RingLight Core)
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    volumes:
-      - ./backend:/app
     env_file:
-      - ./.env
+      - .env # Load environment variables from .env file
     environment:
-      - POSTGRES_SERVER=postgres
+      # Override DB/Redis hosts to use service names
+      - POSTGRES_SERVER=db
+      - REDIS_URL=redis://redis:6379/0
+      # Service discovery for future microservices
+      - LLM_SERVICE_URL=http://llm-service:6000
+      - STREAMING_SERVICE_URL=http://gstreamer-service:5000 # Updated service name
+      - SPEECH_SERVICE_URL=http://speech-service:50051 # Updated service name and port
+      # - KAFKA_BOOTSTRAP_SERVERS=kafka:9092 # Uncomment if Kafka is added
     ports:
-      - "8000:8000"
+      - "8000:8000" # Map host port 8000 to container port 8000
+    volumes:
+      - ./backend:/app # Mount local backend code for development (remove for production builds)
+      # - media-storage:/app/media # Mount persistent media storage if backend handles uploads directly
     depends_on:
-      postgres:
-        condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      db:
+        condition: service_healthy # Wait for DB to be ready
+      redis:
+        condition: service_started # Wait for Redis to start
+      # Add dependencies for future services if needed
+      # - gstreamer-service
+      # - llm-service
+      # - speech-service
+      # - kafka
+    networks:
+      - ringlight-network
+    # --- Optional: GPU Access for Backend (Uncomment if needed) ---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1 # Request 1 GPU
+    #           capabilities: [gpu] # Basic compute capability
 
-  frontend:
+  # Database (PostgreSQL)
+  db:
+    image: postgres:14-alpine # Use specific version
+    env_file:
+      - .env # Load POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB from .env
+    environment:
+      # Ensure these are set in .env or uncomment and set defaults here
+      # POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-verxepassword} # Use your actual password
+      # POSTGRES_DB: ${POSTGRES_DB:-verxe_db}
+      PGDATA: /var/lib/postgresql/data/pgdata # Explicitly set data directory
+    volumes:
+      - postgres-data:/var/lib/postgresql/data # Persistent storage
+    networks:
+      - ringlight-network
+    healthcheck:
+      # Use environment variables set in this service context for healthcheck
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-verxe_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports: # Optional: Expose DB port locally for debugging
+      - "5432:5432"
+
+  # Redis for caching and/or WebSocket scaling/message queue
+  redis:
+    image: redis:6-alpine # Use specific version
+    volumes:
+      - redis-data:/data # Persistent storage (optional for cache)
+    networks:
+      - ringlight-network
+    ports: # Optional: Expose Redis port locally for debugging
+      - "6379:6379"
+
+  # --- Placeholder Services for Future RingLight Features ---
+
+  # Streaming service with GStreamer (Replaces Holoscan)
+  gstreamer-service:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: Dockerfile.gstreamer
+    # --- GPU Access --- Requires Docker Compose version supporting deploy.resources
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Request 1 GPU
+              capabilities: [gpu, utility, video] # Needs video capabilities
     volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    env_file:
-      - ./.env
-    environment:
-      - REACT_APP_API_URL=http://localhost:8000
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
+      - media-storage:/app/media # Mount shared media storage
+    networks:
+      - ringlight-network
+    # depends_on: # Add dependency if it needs Kafka, etc.
+    #   - kafka
 
+  # LLM service for inference
+  llm-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.llm
+    ports: # Optional: Expose port locally for testing
+      - "6000:6000"
+    # --- GPU Access ---
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Request 1 GPU
+              capabilities: [gpu] # Compute capability
+    volumes:
+      - model-cache:/app/models # Persistent storage for downloaded models
+    networks:
+      - ringlight-network
+
+  # Riva speech service
+  speech-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.riva
+    ports: # Optional: Expose port locally for testing
+      - "50051:50051"
+    # --- GPU Access ---
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Request 1 GPU
+              capabilities: [gpu] # Compute capability
+    volumes:
+      - speech-models:/opt/riva/models # Persistent storage for Riva models
+    networks:
+      - ringlight-network
+
+  # Apache Kafka (Optional - for event-driven architecture)
+  # kafka:
+  #   image: confluentinc/cp-kafka:7.3.0 # Use a specific version
+  #   hostname: kafka
+  #   container_name: kafka
+  #   depends_on:
+  #     - zookeeper
+  #   ports:
+  #     - "9092:9092"
+  #     - "29092:29092" # For host access
+  #   environment:
+  #     KAFKA_BROKER_ID: 1
+  #     KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+  #     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+  #     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+  #     KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  #   networks:
+  #     - ringlight-network
+  #
+  # zookeeper:
+  #   image: confluentinc/cp-zookeeper:7.3.0 # Use a specific version
+  #   hostname: zookeeper
+  #   container_name: zookeeper
+  #   ports:
+  #     - "2181:2181"
+  #   environment:
+  #     ZOOKEEPER_CLIENT_PORT: 2181
+  #     ZOOKEEPER_TICK_TIME: 2000
+  #   networks:
+  #     - ringlight-network
+
+# Define the network
+networks:
+  ringlight-network:
+    driver: bridge
+
+# Define persistent volumes
 volumes:
-  postgres_data: 
+  postgres-data:
+  redis-data:
+  media-storage: # For GStreamer output/input, backend uploads
+  model-cache:   # For LLM models
+  speech-models: # For Riva models 

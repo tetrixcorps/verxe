@@ -1,0 +1,22 @@
+# Dockerfile.llm (Place in the root or a dedicated directory)
+
+# Use a specific tag
+FROM nvcr.io/nvidia/pytorch:23.03-py3
+
+# Install dependencies for the LLM service
+COPY requirements-llm.txt .
+# RUN pip install --no-cache-dir -r requirements-llm.txt # Uncomment when requirements exist
+
+# Copy models and application code specific to the LLM service
+# Adjust paths when code/models are available
+# COPY ./path/to/your/llm/models /app/models/
+# COPY ./path/to/your/llm/service/code /app/services/llm/
+
+WORKDIR /app
+
+# Expose port for model serving
+EXPOSE 6000
+
+# Start the actual inference service script
+# Replace 'inference_service.py' with your actual entrypoint script
+CMD ["python", "services/llm/inference_service.py"] # Placeholder command 

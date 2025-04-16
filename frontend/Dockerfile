@@ -1,21 +1,23 @@
-FROM node:16-alpine
-
+# --- Build Stage ---
+FROM node:16-alpine AS build
+# Set working directory
 WORKDIR /app
-
-# Copy package.json and package-lock.json
+# Copy package files and install dependencies using 'ci' for reproducibility
 COPY package*.json ./
-
-# Install dependencies
-RUN npm install
-
-# Copy project files
+RUN npm ci
+# Copy source code and build the React application
 COPY . .
-
-# Build app for production
 RUN npm run build
 
-# Install serve to run the application
-RUN npm install -g serve
-
-# Command to run when container starts
-CMD ["serve", "-s", "build", "-l", "3000"] 
+# --- Production Stage ---
+# Use a specific Nginx version
+FROM nginx:1.25-alpine
+# Copy the built static files from the build stage
+COPY --from=build /app/build /usr/share/nginx/html
+# Copy the custom Nginx configuration
+# This file needs to exist in the frontend directory context
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Expose port 80 for Nginx
+EXPOSE 80
+# Default command to start Nginx
+CMD ["nginx", "-g", "daemon off;"]

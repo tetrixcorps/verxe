@@ -1,0 +1,2 @@
+# Placeholder for LLM service Python dependencies
+# Add libraries like transformers, torch, etc., when needed 

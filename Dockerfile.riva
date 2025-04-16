@@ -1,0 +1,22 @@
+# Dockerfile.riva (Place in the root or a dedicated directory)
+
+# Use a specific Riva version tag
+FROM nvcr.io/nvidia/riva:2.14.0
+
+# Copy custom configuration if needed
+# Ensure riva-config.yaml exists in the build context if uncommented
+# COPY riva-config.yaml /opt/riva/config.yaml
+
+# Copy any custom speech service logic if applicable
+# Adjust path when code is available
+# COPY ./path/to/your/speech/service/code /app/services/speech/
+
+# Expose Riva standard gRPC port
+EXPOSE 50051
+# EXPOSE 8000 8001 8002 # Older/specific ports if needed
+
+# Start Riva server (check Riva documentation for the correct command for your version)
+# This is a likely command, adjust as needed:
+CMD ["/opt/riva/bin/start-riva"]
+# Example using custom config:
+# CMD ["/opt/riva/bin/start-riva", "--config=/opt/riva/config.yaml"] 

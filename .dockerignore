@@ -1,0 +1,50 @@
+# Git files
+.git
+.gitignore
+
+# Docker files
+Dockerfile*
+.dockerignore
+docker-compose.yml
+
+# Node.js
+frontend/node_modules
+frontend/build
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# Python
+backend/__pycache__
+backend/*.py[cod]
+backend/*$py.class
+backend/venv
+backend/.venv
+backend/env
+backend/*.egg-info
+backend/.pytest_cache
+backend/.mypy_cache
+
+# IDE / OS specific
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# Environment files (should not be in image)
+.env
+.env.*
+
+# Placeholder requirements (copied explicitly in specific Dockerfiles if needed)
+requirements-*.txt
+
+# Logs
+logs
+*.log
+
+# Local data / Cache
+*data/
+*cache/
+*.sqlite3
+*.db 

@@ -1,0 +1,50 @@
+# Dockerfile.gstreamer (Place in the root or a dedicated directory)
+
+FROM ubuntu:22.04
+
+# Install GStreamer and essential dependencies
+# Add python3-gst-1.0 if you plan to use Python bindings
+# Add kafka-python or librdkafka bindings if integrating Kafka here
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libgstreamer-plugins-good1.0-dev \
+    libgstreamer-plugins-bad1.0-dev \
+    libgstreamer-plugins-ugly1.0-dev \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    gstreamer1.0-libav \
+    gstreamer1.0-tools \
+    python3 \
+    python3-pip \
+    python3-gst-1.0 \
+    # Add any other system dependencies needed by your GStreamer service code
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies for the GStreamer service
+# Copy only the requirements specific to this service
+# COPY requirements-gstreamer.txt .
+# RUN pip3 install --no-cache-dir -r requirements-gstreamer.txt
+
+# Copy ONLY the application files needed for the GStreamer service
+# Example: Copying a dedicated streaming service directory
+# Adjust these paths based on your actual project structure
+# COPY ./backend/app/services/streaming /app/services/streaming/
+# COPY ./backend/app/core /app/core/
+# Add other necessary code modules
+
+# Expose any ports the service might need (e.g., for metrics or a control API)
+# EXPOSE 5000
+
+# Set environment variables (if required by the service)
+# ENV NVIDIA_VISIBLE_DEVICES=all
+# ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+
+# Start the actual GStreamer service script
+# Replace 'ring_light_gstreamer_service.py' with your actual entrypoint script
+CMD ["python3", "services/streaming/ring_light_gstreamer_service.py"] # Placeholder command 
