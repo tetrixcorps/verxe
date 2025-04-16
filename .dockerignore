@@ -3,9 +3,9 @@
 .gitignore
 
 # Docker files
-Dockerfile*
-.dockerignore
-docker-compose.yml
+# Dockerfile*
+# .dockerignore
+# docker-compose.yml
 
 # Node.js
 frontend/node_modules
