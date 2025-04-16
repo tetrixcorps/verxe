@@ -55,6 +55,18 @@ const Dashboard: React.FC = () => {
           <h1 className="text-2xl font-bold text-gray-800">Chat Rooms</h1>
           <div className="flex items-center space-x-4">
             <button
+              onClick={() => navigate('/purchase-tokens')}
+              className="text-sm font-medium text-primary hover:underline"
+            >
+              Get Tokens
+            </button>
+            <button
+              onClick={() => navigate('/analytics')}
+              className="text-gray-600 hover:text-gray-800"
+            >
+              Analytics
+            </button>
+            <button
               onClick={() => navigate('/profile')}
               className="text-gray-600 hover:text-gray-800"
             >

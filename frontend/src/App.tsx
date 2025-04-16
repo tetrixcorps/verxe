@@ -9,6 +9,8 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import ChatRoom from './pages/ChatRoom';
 import Profile from './pages/Profile';
+import Analytics from './pages/Analytics';
+import PurchaseTokens from './pages/PurchaseTokens';
 
 function App() {
   return (
@@ -38,6 +40,22 @@ function App() {
             element={
               <ProtectedRoute>
                 <Profile />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/analytics"
+            element={
+              <ProtectedRoute>
+                <Analytics />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/purchase-tokens"
+            element={
+              <ProtectedRoute>
+                <PurchaseTokens />
               </ProtectedRoute>
             }
           />

@@ -125,6 +125,18 @@ const Profile: React.FC = () => {
                   <dt className="text-sm font-medium text-gray-500">Email</dt>
                   <dd className="mt-1 text-sm text-gray-900">{user?.email}</dd>
                 </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">User Tier</dt>
+                  <dd className="mt-1 text-sm text-gray-900">Tier {user?.tier || 1}</dd> 
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Badge</dt>
+                  <dd className="mt-1 text-sm text-gray-900 uppercase">{user?.badge || 'NONE'}</dd> 
+                </div>
+                <div className="sm:col-span-1">
+                  <dt className="text-sm font-medium text-gray-500">Verified</dt>
+                  <dd className="mt-1 text-sm text-gray-900">{user?.is_verified ? 'Yes' : 'No'}</dd> 
+                </div>
               </dl>
             </div>
           </div>

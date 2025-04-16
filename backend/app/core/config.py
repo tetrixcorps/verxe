@@ -44,6 +44,37 @@ class Settings(BaseSettings):
             host=values.get("POSTGRES_SERVER"),
             path=f"/{values.get('POSTGRES_DB') or ''}",
         )
+    
+    # Streaming settings
+    RTMP_SERVER_URL: str = "rtmp://localhost/live"
+    HLS_SERVER_URL: str = "http://localhost:8080/hls"
+    ENABLE_GSTREAMER: bool = False
+    ENABLE_RECORDING: bool = False
+    RECORDING_PATH: str = "/tmp/recordings"
+    
+    # Object storage settings (S3)
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_REGION: str = "us-east-1"
+    AWS_BUCKET_NAME: str = "verxe-uploads"
+    
+    # Rate limiting settings
+    RATE_LIMIT_TIER_1: int = 10  # requests per minute for tier 1 (basic)
+    RATE_LIMIT_TIER_2: int = 30  # requests per minute for tier 2 (silver)
+    RATE_LIMIT_TIER_3: int = 60  # requests per minute for tier 3 (gold)
+    RATE_LIMIT_TIER_4: int = 100 # requests per minute for tier 4 (diamond)
+    
+    # Token settings
+    INITIAL_TOKEN_GRANT: float = 100.0  # tokens granted to new users
+    
+    # Stripe settings
+    STRIPE_SECRET_KEY: Optional[str] = None
+    STRIPE_WEBHOOK_SECRET: Optional[str] = None
+
+    # Google OAuth settings
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    GOOGLE_CLIENT_SECRET: Optional[str] = None
+    GOOGLE_REDIRECT_URI: Optional[str] = f"{SERVER_HOST}/api/auth/google/callback" # Default callback URI
 
     class Config:
         case_sensitive = True

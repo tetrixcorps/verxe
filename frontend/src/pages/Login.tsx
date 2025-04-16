@@ -21,6 +21,8 @@ const Login: React.FC = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  
+  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000'; // Define API_URL
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,6 +91,18 @@ const Login: React.FC = () => {
               </Button>
             </div>
           </form>
+          
+          <div className="mt-4 text-center text-sm">Or continue with</div>
+          
+          <Button 
+            variant="outline" 
+            className="w-full mt-4" 
+            onClick={() => window.location.href = `${API_URL}/api/auth/google/login`}
+          >
+            {/* Add Google Icon here if available */}
+            Login with Google
+          </Button>
+          
         </CardContent>
         
         <CardFooter className="flex justify-center">

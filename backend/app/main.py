@@ -5,7 +5,9 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
 
 from .api.api_v1.api import api_router
+from .api.api_v1.websockets import router as websocket_router
 from .core.config import settings
+from .core.rate_limit import RateLimitMiddleware
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -25,8 +27,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add rate limiting middleware
+app.add_middleware(RateLimitMiddleware)
+
 # Include routers
 app.include_router(api_router, prefix=settings.API_V1_STR)
+app.include_router(websocket_router)  # WebSocket router without prefix
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
