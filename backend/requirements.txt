@@ -20,6 +20,17 @@ confluent-kafka[avro]>=1.9.0,<3.0.0 # Updated for Schema Registry
 # Redis Client
 redis>=4.5.0,<5.1.0 # Added for distributed WebSocket manager
 
+# Monitoring & Observability
+opentelemetry-api>=1.15.0,<2.0.0
+opentelemetry-sdk>=1.15.0,<2.0.0
+opentelemetry-exporter-otlp-proto-grpc>=1.15.0,<2.0.0 # Or http
+opentelemetry-instrumentation-fastapi>=0.36b0,<1.0.0
+prometheus-fastapi-instrumentator>=6.0.0,<7.0.0
+prometheus-client>=0.15.0,<1.0.0
+
+# Scheduler (for reconciliation task)
+apscheduler>=3.10.0,<4.0.0
+
 # GStreamer is a system dependency, not a pip package usually.
 # Ensure GStreamer 1.x development libraries are installed on the system.
 # For rate limiting and other core features, no specific external package seems used beyond standard libraries. 

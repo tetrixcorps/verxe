@@ -9,6 +9,7 @@
     {"name": "room_id", "type": "string", "doc": "Room context UUID"},
     {"name": "payload", "type": "string", "doc": "JSON string containing SDP or ICE candidate details"},
     {"name": "timestamp", "type": "string", "doc": "ISO 8601 timestamp"},
-    {"name": "version", "type": "int", "default": 1}
+    {"name": "version", "type": "int", "default": 1},
+    {"name": "auth_token", "type": ["null", "string"], "default": null, "doc": "Authorization token for request validation"}
   ]
 } 

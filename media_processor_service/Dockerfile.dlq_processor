@@ -1,0 +1,38 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    librdkafka-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY media_processor_service/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional packages needed for DLQ processor
+RUN pip install --no-cache-dir \
+    confluent-kafka==2.1.1 \
+    prometheus-client==0.16.0 \
+    aiohttp==3.8.4
+
+# Copy the DLQ processor script and metrics
+COPY media_processor_service/run_dlq_processor.py .
+COPY media_processor_service/metrics.py .
+
+# Make the script executable
+RUN chmod +x run_dlq_processor.py
+
+# Create a non-root user to run the service
+RUN useradd -m appuser
+USER appuser
+
+# Set the entrypoint
+ENTRYPOINT ["python", "run_dlq_processor.py"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD curl -f http://localhost:8001/health || exit 1 

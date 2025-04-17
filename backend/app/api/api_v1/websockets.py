@@ -18,6 +18,7 @@ from ...core.config import settings
 from ...core.connection_manager import connection_manager # Use Redis manager
 from ...core.kafka_consumer_manager import kafka_consumer_manager # Added
 from ...services.signaling_service import SignalingService # Added
+from ...services.chat_service import ChatService
 
 logger = logging.getLogger(__name__) # Added logger instance
 router = APIRouter()
@@ -167,8 +168,53 @@ async def websocket_endpoint(
 
                 # --- Handle different message types --- 
                 if message_type == 'chat':
-                    logger.info(f"[{client_id}] Received chat message (TODO): {payload}")
-                    # TODO: Produce to chat topic, handle via ChatService?
+                    logger.info(f"[{client_id}] Received chat message: {payload}")
+                    
+                    # Validate required fields
+                    room_id = payload.get('roomId')
+                    content = payload.get('content')
+                    
+                    if not room_id or not content:
+                        logger.warning(f"[{client_id}] Invalid chat message: missing roomId or content")
+                        await websocket.send_json({
+                            "type": "error",
+                            "payload": {"message": "Chat message must include roomId and content"}
+                        })
+                        continue
+                    
+                    # Validate user permission for the room
+                    try:
+                        # Verify user has permission to chat in this room
+                        from ...services.signaling_service import verify_room_permission
+                        has_permission = await verify_room_permission(client_id, room_id, db)
+                        
+                        if not has_permission:
+                            logger.warning(f"[{client_id}] User not authorized to chat in room {room_id}")
+                            await websocket.send_json({
+                                "type": "error",
+                                "payload": {"message": "Not authorized to chat in this room"}
+                            })
+                            continue
+                        
+                        # Process and save the chat message
+                        chat_service = ChatService(db)
+                        
+                        # Process message calls the broadcast internally
+                        message_result = await chat_service.process_message(
+                            room_id=UUID(room_id),
+                            user_id=UUID(client_id),
+                            content=content
+                        )
+                        
+                        # No need to send back confirmation as the user will receive 
+                        # the message through the broadcast mechanism
+                        
+                    except Exception as e:
+                        logger.exception(f"[{client_id}] Error processing chat message: {e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "payload": {"message": "Failed to process chat message"}
+                        })
                     
                 elif message_type == 'webrtc_signal':
                     logger.debug(f"[{client_id}] Received WebRTC signal: {payload}")
@@ -185,12 +231,136 @@ async def websocket_endpoint(
                              logger.warning(f"[{client_id}] Failed to send signaling error to client: {send_err}")
 
                 elif message_type == 'stream_control':
-                     logger.info(f"[{client_id}] Received Stream Control (TODO): {payload}")
-                     # TODO: Validate user permission before producing control command?
-                     # command = payload.get('command') 
-                     # stream_id = payload.get('streamId') 
-                     # Produce control command to KAFKA_TOPIC_STREAM_CONTROL (as done in StreamService)
-                     # Might require a different producer with stream_control schema
+                    logger.info(f"[{client_id}] Received Stream Control: {payload}")
+                    
+                    # Extract required stream control parameters
+                    command = payload.get('command')
+                    stream_id = payload.get('streamId')
+                    
+                    # Validate required fields
+                    if not command or not stream_id:
+                        logger.warning(f"[{client_id}] Invalid stream control message: missing command or streamId")
+                        await websocket.send_json({
+                            "type": "error",
+                            "payload": {"message": "Stream control must include command and streamId"}
+                        })
+                        continue
+                    
+                    # Validate command type
+                    valid_commands = ['START', 'STOP', 'QUERY_STATUS']
+                    if command not in valid_commands:
+                        logger.warning(f"[{client_id}] Invalid stream control command: {command}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "payload": {"message": f"Invalid command. Must be one of: {', '.join(valid_commands)}"}
+                        })
+                        continue
+                    
+                    try:
+                        # Verify user has permission to control this stream
+                        from ...services.stream_service import StreamService
+                        stream_service = StreamService(db)
+                        
+                        # Get the stream to verify ownership/permissions
+                        stream = await stream_service.get_stream(UUID(stream_id))
+                        
+                        if not stream:
+                            logger.warning(f"[{client_id}] Stream not found: {stream_id}")
+                            await websocket.send_json({
+                                "type": "error",
+                                "payload": {"message": "Stream not found"}
+                            })
+                            continue
+                        
+                        # Check if user is authorized to control this stream
+                        if str(stream.owner_id) != client_id:
+                            logger.warning(f"[{client_id}] User not authorized to control stream {stream_id}")
+                            await websocket.send_json({
+                                "type": "error",
+                                "payload": {"message": "Not authorized to control this stream"}
+                            })
+                            continue
+                        
+                        # Process the command
+                        if command == 'START':
+                            # Call the stream service to start the stream
+                            result = await stream_service.start_stream(UUID(stream_id), UUID(client_id))
+                            await websocket.send_json({
+                                "type": "stream_control_response",
+                                "payload": {
+                                    "status": "success",
+                                    "message": "Stream start initiated",
+                                    "streamId": stream_id
+                                }
+                            })
+                            
+                        elif command == 'STOP':
+                            # Call the stream service to end the stream
+                            result = await stream_service.end_stream(UUID(stream_id), UUID(client_id))
+                            await websocket.send_json({
+                                "type": "stream_control_response",
+                                "payload": {
+                                    "status": "success",
+                                    "message": "Stream stop initiated",
+                                    "streamId": stream_id
+                                }
+                            })
+                            
+                        elif command == 'QUERY_STATUS':
+                            # Directly send a Kafka command to query status
+                            from ...kafka.kafka_setup import get_kafka_producer
+                            from datetime import datetime
+                            
+                            producer = get_kafka_producer()
+                            if producer:
+                                # Create a status query command
+                                query_command = {
+                                    "command": "QUERY_STATUS",
+                                    "stream_id": stream_id,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "version": 1,
+                                    # Other fields can be null for this command
+                                    "stream_key": None,
+                                    "rtmp_url": None,
+                                    "is_recorded": None,
+                                    "user_id": client_id,
+                                    "room_id": str(stream.room_id)
+                                }
+                                
+                                # Produce command to Kafka stream control topic
+                                from ...kafka.schema_registry import get_avro_serializer
+                                stream_control_serializer = get_avro_serializer("stream_control")
+                                
+                                producer.produce(
+                                    topic=settings.KAFKA_TOPIC_STREAM_CONTROL,
+                                    key=stream_id,
+                                    value=query_command,
+                                    value_serializer=stream_control_serializer,
+                                    on_delivery=lambda err, msg: logger.error(f"Status query delivery failed: {err}") if err else None
+                                )
+                                producer.poll(0)
+                                
+                                await websocket.send_json({
+                                    "type": "stream_control_response",
+                                    "payload": {
+                                        "status": "success",
+                                        "message": "Status query sent",
+                                        "streamId": stream_id
+                                    }
+                                })
+                            else:
+                                logger.error(f"[{client_id}] Failed to get Kafka producer for status query")
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "payload": {"message": "Failed to send status query"}
+                                })
+                                
+                    except Exception as e:
+                        logger.exception(f"[{client_id}] Error processing stream control: {e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "payload": {"message": "Failed to process stream control command"}
+                        })
 
                 else:
                     logger.warning(f"[{client_id}] Unknown message type received: {message_type}")

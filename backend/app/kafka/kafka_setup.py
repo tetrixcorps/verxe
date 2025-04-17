@@ -82,13 +82,16 @@ def get_kafka_producer() -> SerializingProducer | None:
 def get_kafka_consumer(topic: str, group_id: str) -> DeserializingConsumer | None:
     """Creates and returns a configured Kafka DeserializingConsumer."""
     
-    # Determine schema name based on topic (simple example, needs refinement)
-    schema_name = None
-    if topic == settings.KAFKA_TOPIC_STREAM_STATUS:
-        schema_name = "stream_status"
-    # Add other topic-to-schema mappings here
-    # elif topic == settings.KAFKA_TOPIC_WEBRTC_SIGNALING_OUT:
-    #     schema_name = "webrtc_signal"
+    # Map topics to their corresponding schema names
+    topic_to_schema_map = {
+        settings.KAFKA_TOPIC_STREAM_STATUS: "stream_status",
+        settings.KAFKA_TOPIC_STREAM_CONTROL: "stream_control",
+        settings.KAFKA_TOPIC_WEBRTC_SIGNALING_IN: "webrtc_signal",
+        settings.KAFKA_TOPIC_WEBRTC_SIGNALING_OUT: "webrtc_signal",
+    }
+    
+    # Determine schema name based on topic
+    schema_name = topic_to_schema_map.get(topic)
     
     if not schema_name:
         logger.error(f"No Avro schema mapping found for topic: {topic}")

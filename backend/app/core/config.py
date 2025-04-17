@@ -82,7 +82,12 @@ class Settings(BaseSettings):
     KAFKA_TOPIC_STREAM_STATUS: str = "stream_status_events"
     KAFKA_TOPIC_WEBRTC_SIGNALING_IN: str = "webrtc_signaling_in"
     KAFKA_TOPIC_WEBRTC_SIGNALING_OUT: str = "webrtc_signaling_out"
-    # KAFKA_TOPIC_..._DLQ: str = "..._dlq" # Add DLQ topics
+    # Dead Letter Queue topics
+    KAFKA_TOPIC_STREAM_CONTROL_DLQ: str = "stream_control_events_dlq"
+    KAFKA_TOPIC_STREAM_STATUS_DLQ: str = "stream_status_events_dlq"
+    KAFKA_TOPIC_WEBRTC_SIGNALING_IN_DLQ: str = "webrtc_signaling_in_dlq"
+    KAFKA_TOPIC_WEBRTC_SIGNALING_OUT_DLQ: str = "webrtc_signaling_out_dlq"
+    KAFKA_TOPIC_CHAT_DLQ: str = "chat_events_dlq"
     SCHEMA_REGISTRY_URL: str = "http://schema-registry:8081"
 
     # Redis settings

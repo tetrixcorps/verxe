@@ -27,6 +27,7 @@ class Stream(Base):
     owner = relationship("User", back_populates="streams")
     sessions = relationship("StreamSession", back_populates="stream", cascade="all, delete-orphan")
     viewers = relationship("StreamViewer", back_populates="stream", cascade="all, delete-orphan")
+    events = relationship("StreamEvent", back_populates="stream", cascade="all, delete-orphan")
 
 class StreamSession(Base):
     __tablename__ = "stream_sessions"
@@ -54,4 +55,19 @@ class StreamViewer(Base):
     
     # Relationships
     stream = relationship("Stream", back_populates="viewers")
-    user = relationship("User", back_populates="stream_views") 
+    user = relationship("User", back_populates="stream_views")
+
+class StreamEvent(Base):
+    """
+    Tracks events related to a stream for auditing and troubleshooting.
+    """
+    __tablename__ = "stream_events"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stream_id = Column(UUID(as_uuid=True), ForeignKey("streams.id", ondelete="CASCADE"), nullable=False)
+    event_type = Column(String, nullable=False, index=True)  # e.g., START, STOP, ERROR, KAFKA_ERROR
+    data = Column(JSONB, nullable=True)  # Additional event data as JSON
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    stream = relationship("Stream", back_populates="events") 

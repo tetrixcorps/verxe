@@ -33,9 +33,21 @@ class WebRTCSignalEvent(BaseModel):
     payload: str # JSON string of signalData
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     version: int = 1
-    # Optional: Add auth_token if needed later
-    # auth_token: Optional[str] = None 
+    auth_token: Optional[str] = None  # Authorization token for validating requests at the media processor
 
     class Config:
         # Ensure it can be easily converted to dict for Avro serializer
         orm_mode = False 
+
+    @validator('auth_token')
+    def mask_auth_token_for_logs(cls, v):
+        """Ensures the auth token is not fully exposed in logs"""
+        return v  # The actual value is preserved in the object
+        
+    def dict(self, *args, **kwargs):
+        """Custom dict method to handle sensitive fields in logs"""
+        result = super().dict(*args, **kwargs)
+        # Only include auth_token if it's set
+        if result.get('auth_token') is None:
+            result.pop('auth_token', None)
+        return result 

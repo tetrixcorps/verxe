@@ -71,60 +71,113 @@ jobs:
         cd frontend
         npm test -- --coverage
   
-  build-and-push:
+  build-push-scan:
+    name: Build, Push & Scan Images
     needs: [test-backend, test-frontend]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
+    strategy:
+      matrix:
+        include:
+          - image_name: verxe-backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+          - image_name: verxe-frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+          - image_name: verxe-media-processor
+            context: .
+            dockerfile: ./Dockerfile.gstreamer # Assuming this is the correct name/path
+          # Add llm/riva services here when ready
+          # - image_name: verxe-llm
+          #   context: .
+          #   dockerfile: ./Dockerfile.llm 
+          # - image_name: verxe-riva
+          #   context: .
+          #   dockerfile: ./Dockerfile.riva
+            
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v3
     
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
-      
+
+    - name: Cache Docker layers
+      uses: actions/cache@v3
+      with:
+        path: /tmp/.buildx-cache
+        # Key based on commit hash for specific cache, fallback to prefix
+        key: ${{ runner.os }}-buildx-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-
+          
     - name: Login to Docker Hub
       uses: docker/login-action@v2
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
         
-    - name: Build and push backend
+    - name: Build and push ${{ matrix.image_name }}
       uses: docker/build-push-action@v4
       with:
-        context: ./backend
+        context: ${{ matrix.context }}
+        file: ${{ matrix.dockerfile }}
         push: true
-        tags: ${{ secrets.DOCKERHUB_USERNAME }}/verxe-backend:latest
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:latest
+        cache-from: type=local,src=/tmp/.buildx-cache
+        cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
         
-    - name: Build and push frontend
-      uses: docker/build-push-action@v4
+    - name: Scan ${{ matrix.image_name }} image
+      uses: aquasecurity/trivy-action@master
       with:
-        context: ./frontend
-        push: true
-        tags: ${{ secrets.DOCKERHUB_USERNAME }}/verxe-frontend:latest
+        image-ref: '${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image_name }}:latest'
+        format: 'table'
+        exit-code: '1' # Fail build on critical/high vulnerabilities
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        severity: 'CRITICAL,HIGH'
         
-    - name: Build and push media-processor
-      uses: docker/build-push-action@v4
-      with:
-        context: . # Assuming Dockerfile.media-processor is in root
-        file: ./Dockerfile.gstreamer # Correct path to the renamed Dockerfile
-        push: true
-        tags: ${{ secrets.DOCKERHUB_USERNAME }}/verxe-media-processor:latest
-  
+    # This step moves the cache from the temp directory to the directory needed by actions/cache for upload
+    # Needed because buildx doesn't write directly to the cache path (bug?)
+    - name: Move cache
+      run: |
+        rm -rf /tmp/.buildx-cache
+        mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
   deploy:
-    needs: build-and-push
+    # Note: This deploy job assumes deployment to a single server via SSH using Docker Compose.
+    # For Kubernetes, replace this job with kubectl/helm steps.
+    name: Deploy to Server
+    needs: build-push-scan # Depends on the build, push, and scan job
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # environment: production # Optional: Link to a GitHub Environment for secrets/protection rules
     
     steps:
-    - uses: actions/checkout@v3
+    # No checkout needed if only deploying compose file from repo
+    # - uses: actions/checkout@v3 
     
-    - name: Install SSH key
-      uses: shimataro/ssh-key-action@v2
-      with:
-        key: ${{ secrets.SSH_PRIVATE_KEY }}
-        known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
-        
-    - name: Deploy to server
+    - name: Configure SSH
       run: |
-        scp docker-compose.yml ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/verxe/
-        ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cd ~/verxe && docker-compose pull && docker-compose down && docker-compose up -d" 
+        mkdir -p ~/.ssh/
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        cat >>~/.ssh/config <<END
+        Host deploy_server
+          HostName ${{ secrets.SSH_HOST }}
+          User ${{ secrets.SSH_USER }}
+          IdentityFile ~/.ssh/deploy_key
+          StrictHostKeyChecking no
+        END
+        echo "Known hosts entry:" # Add known_hosts entry if available
+        echo "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts
+        
+    - name: Deploy docker-compose.yml and restart services
+      # IMPORTANT: Assumes docker-compose.yml in repo uses correct image tags 
+      # (e.g., your_dockerhub_user/verxe-backend:latest) AND that secrets
+      # are already securely configured on the target server (e.g., via .env file)
+      run: |
+        scp docker-compose.yml deploy_server:~/verxe/
+        ssh deploy_server "cd ~/verxe && docker-compose pull && docker-compose down && docker-compose up -d" 

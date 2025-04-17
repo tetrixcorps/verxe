@@ -14,10 +14,17 @@ from confluent_kafka.schema_registry.avro import AvroSerializer
 from confluent_kafka.serialization import StringSerializer
 import pathlib # To load schema files
 
+# Add tracing imports
+from opentelemetry import trace
+
 from ..models.stream import Stream, StreamSession, StreamViewer
 from ..models.user import User
 from ..models.room import Room, RoomParticipant
 from ..core.config import settings
+from ..core.tracing import get_tracer # Assuming tracer setup is in core
+
+# Get tracer instance
+tracer = get_tracer()
 
 # --- Kafka Producer Setup with Schema Registry --- 
 
@@ -97,181 +104,225 @@ class StreamService:
         return secrets.token_urlsafe(16)
     
     async def create_stream(self, user_id: uuid.UUID, room_id: uuid.UUID, title: str, description: Optional[str] = None, is_recorded: bool = False) -> Stream:
-        """Create a new stream"""
-        # Verify room exists and user has permission
-        room_query = select(Room).where(Room.id == room_id)
-        room_result = await self.db.execute(room_query)
-        room = room_result.scalars().first()
-        
-        if not room:
-            raise HTTPException(status_code=404, detail="Room not found")
-        
-        # Check if user is room owner or moderator (permission to create stream)
-        can_stream = room.owner_id == user_id
-        if not can_stream:
-            participant_query = select(RoomParticipant).where(
-                and_(
-                    RoomParticipant.room_id == room_id,
-                    RoomParticipant.user_id == user_id,
-                    RoomParticipant.is_moderator == True
+        with tracer.start_as_current_span("StreamService.create_stream") as span:
+            span.set_attribute("user_id", str(user_id))
+            span.set_attribute("room_id", str(room_id))
+            # Verify room exists and user has permission
+            room_query = select(Room).where(Room.id == room_id)
+            room_result = await self.db.execute(room_query)
+            room = room_result.scalars().first()
+            
+            if not room:
+                raise HTTPException(status_code=404, detail="Room not found")
+            
+            # Check if user is room owner or moderator (permission to create stream)
+            can_stream = room.owner_id == user_id
+            if not can_stream:
+                participant_query = select(RoomParticipant).where(
+                    and_(
+                        RoomParticipant.room_id == room_id,
+                        RoomParticipant.user_id == user_id,
+                        RoomParticipant.is_moderator == True
+                    )
                 )
-            )
-            participant_result = await self.db.execute(participant_query)
-            participant = participant_result.scalars().first()
-            if participant:
-                can_stream = True
+                participant_result = await self.db.execute(participant_query)
+                participant = participant_result.scalars().first()
+                if participant:
+                    can_stream = True
 
-        if not can_stream:
-            raise HTTPException(status_code=403, detail="User does not have permission to stream in this room")
-        
-        # Generate a unique stream key
-        stream_key = self._generate_stream_key()
-        
-        # Create the stream
-        stream = Stream(
-            id=uuid.uuid4(),
-            title=title,
-            description=description,
-            room_id=room_id,
-            owner_id=user_id,
-            stream_key=stream_key,
-            rtmp_url=f"{settings.RTMP_SERVER_URL}/{stream_key}",
-            playlist_url=f"{settings.HLS_SERVER_URL}/{stream_key}/playlist.m3u8",
-            status="offline",
-            is_recorded=is_recorded
-        )
-        
-        self.db.add(stream)
-        await self.db.commit()
-        await self.db.refresh(stream)
-        
-        return stream
+            if not can_stream:
+                raise HTTPException(status_code=403, detail="User does not have permission to stream in this room")
+            
+            # Generate a unique stream key
+            stream_key = self._generate_stream_key()
+            
+            # Create the stream
+            stream = Stream(
+                id=uuid.uuid4(),
+                title=title,
+                description=description,
+                room_id=room_id,
+                owner_id=user_id,
+                stream_key=stream_key,
+                rtmp_url=f"{settings.RTMP_SERVER_URL}/{stream_key}",
+                playlist_url=f"{settings.HLS_SERVER_URL}/{stream_key}/playlist.m3u8",
+                status="offline",
+                is_recorded=is_recorded
+            )
+            
+            self.db.add(stream)
+            await self.db.commit()
+            await self.db.refresh(stream)
+            
+            # Add more attributes/events to span if needed
+            return stream # Return value inside the span context
     
     async def start_stream(self, stream_id: uuid.UUID, user_id: uuid.UUID) -> Stream:
-        """Start a stream"""
-        # Get the stream
-        stream = await self.get_stream(stream_id)
-        if not stream:
-            raise HTTPException(status_code=404, detail="Stream not found")
-        
-        # Verify ownership
-        if stream.owner_id != user_id:
-            raise HTTPException(status_code=403, detail="User does not own this stream")
-        
-        # Check if already streaming
-        if stream.status == "live":
-            raise HTTPException(status_code=400, detail="Stream is already live")
-        
-        # Update stream status
-        stream.status = "live"
-        
-        # Create a stream session
-        session = StreamSession(
-            id=uuid.uuid4(),
-            stream_id=stream.id,
-            started_at=datetime.utcnow()
-        )
-        
-        self.db.add(session)
-        await self.db.commit()
-        await self.db.refresh(stream)
-        
-        # --- Send START command to Kafka ---
-        command_payload_dict = {
-            'command': 'START',
-            'stream_id': str(stream.id),
-            'stream_key': stream.stream_key,
-            'rtmp_url': stream.rtmp_url,
-            'is_recorded': stream.is_recorded,
-            'user_id': str(user_id),
-            'room_id': str(stream.room_id),
-            'timestamp': datetime.utcnow().isoformat(),
-            'version': 1
-        }
-
-        try:
-            self.producer.produce(
-                settings.KAFKA_TOPIC_STREAM_CONTROL,
-                key=str(stream.id), # Use stream_id as key for partitioning
-                value=command_payload_dict, # Pass dict for Avro serialization
-                on_delivery=kafka_delivery_report # Use on_delivery with SerializingProducer
+        with tracer.start_as_current_span("StreamService.start_stream") as span:
+            span.set_attribute("stream_id", str(stream_id))
+            span.set_attribute("user_id", str(user_id))
+            # Get the stream
+            stream = await self.get_stream(stream_id)
+            if not stream:
+                raise HTTPException(status_code=404, detail="Stream not found")
+            
+            # Verify ownership
+            if stream.owner_id != user_id:
+                raise HTTPException(status_code=403, detail="User does not own this stream")
+            
+            # Check if already streaming
+            if stream.status == "live":
+                raise HTTPException(status_code=400, detail="Stream is already live")
+            
+            # Update stream status
+            stream.status = "live"
+            
+            # Create a stream session
+            session = StreamSession(
+                id=uuid.uuid4(),
+                stream_id=stream.id,
+                started_at=datetime.utcnow()
             )
-            self.producer.poll(0)
-        except Exception as e:
-            print(f"StreamService: Failed to send START command to Kafka: {e}")
-            # Decide if we should rollback DB changes or just log
-            raise HTTPException(status_code=500, detail="Failed to initiate stream start")
-        # --- End Kafka interaction ---
-        
-        return stream
+            
+            self.db.add(session)
+            await self.db.commit()
+            await self.db.refresh(stream)
+            
+            # --- Send START command to Kafka ---
+            command_payload_dict = {
+                'command': 'START',
+                'stream_id': str(stream.id),
+                'stream_key': stream.stream_key,
+                'rtmp_url': stream.rtmp_url,
+                'is_recorded': stream.is_recorded,
+                'user_id': str(user_id),
+                'room_id': str(stream.room_id),
+                'timestamp': datetime.utcnow().isoformat(),
+                'version': 1
+            }
+
+            try:
+                self.producer.produce(
+                    settings.KAFKA_TOPIC_STREAM_CONTROL,
+                    key=str(stream.id), # Use stream_id as key for partitioning
+                    value=command_payload_dict, # Pass dict for Avro serialization
+                    on_delivery=kafka_delivery_report # Use on_delivery with SerializingProducer
+                )
+                self.producer.poll(0)
+            except Exception as e:
+                print(f"StreamService: Failed to send START command to Kafka: {e}")
+                # Decide if we should rollback DB changes or just log
+                raise HTTPException(status_code=500, detail="Failed to initiate stream start")
+            # --- End Kafka interaction ---
+            
+            return stream
     
     async def end_stream(self, stream_id: uuid.UUID, user_id: uuid.UUID) -> Stream:
-        """End a stream"""
-        # Get the stream
-        stream = await self.get_stream(stream_id)
-        if not stream:
-            raise HTTPException(status_code=404, detail="Stream not found")
-        
-        # Verify ownership
-        if stream.owner_id != user_id:
-            raise HTTPException(status_code=403, detail="User does not own this stream")
-        
-        # Check if streaming
-        if stream.status != "live":
-            raise HTTPException(status_code=400, detail="Stream is not live")
-        
-        # Update stream status
-        stream.status = "ended"
-        
-        # Find the latest active session for this stream and update it
-        session_query = select(StreamSession).where(
-            and_(
-                StreamSession.stream_id == stream.id,
-                StreamSession.ended_at == None
-            )
-        ).order_by(desc(StreamSession.started_at)) # Get the most recent one
-        session_result = await self.db.execute(session_query)
-        session = session_result.scalars().first()
+        with tracer.start_as_current_span("StreamService.end_stream") as span:
+            span.set_attribute("stream_id", str(stream_id))
+            span.set_attribute("user_id", str(user_id))
+            # Get the stream
+            stream = await self.get_stream(stream_id)
+            if not stream:
+                raise HTTPException(status_code=404, detail="Stream not found")
+            
+            # Verify ownership
+            if stream.owner_id != user_id:
+                raise HTTPException(status_code=403, detail="User does not own this stream")
+            
+            # Check if streaming
+            if stream.status != "live":
+                raise HTTPException(status_code=400, detail="Stream is not live")
+            
+            # Update stream status
+            stream.status = "ended"
+            
+            # Find the latest active session for this stream and update it
+            session_query = select(StreamSession).where(
+                and_(
+                    StreamSession.stream_id == stream.id,
+                    StreamSession.ended_at == None
+                )
+            ).order_by(desc(StreamSession.started_at)) # Get the most recent one
+            session_result = await self.db.execute(session_query)
+            session = session_result.scalars().first()
 
-        if session:
-            end_time = datetime.utcnow()
-            session.ended_at = end_time
-            session.duration = (end_time - session.started_at).total_seconds()
-            # Peak/total viewers should be updated by a separate process consuming media service events
+            if session:
+                end_time = datetime.utcnow()
+                session.ended_at = end_time
+                session.duration = (end_time - session.started_at).total_seconds()
+                # Peak/total viewers should be updated by a separate process consuming media service events
 
-        await self.db.commit()
-        await self.db.refresh(stream)
+            await self.db.commit()
+            await self.db.refresh(stream)
 
-        # --- Send STOP command to Kafka ---
-        command_payload_dict = {
-            'command': 'STOP',
-            'stream_id': str(stream.id),
-            'stream_key': stream.stream_key,
-            # Set other fields to None or omit if schema allows
-            'rtmp_url': None,
-            'is_recorded': None,
-            'user_id': str(user_id), # Good to know who stopped it
-            'room_id': str(stream.room_id),
-            'timestamp': datetime.utcnow().isoformat(),
-            'version': 1
-        }
+            # --- Send STOP command to Kafka ---
+            command_payload_dict = {
+                'command': 'STOP',
+                'stream_id': str(stream.id),
+                'stream_key': stream.stream_key,
+                # Set other fields to None or omit if schema allows
+                'rtmp_url': None,
+                'is_recorded': None,
+                'user_id': str(user_id), # Good to know who stopped it
+                'room_id': str(stream.room_id),
+                'timestamp': datetime.utcnow().isoformat(),
+                'version': 1
+            }
 
-        try:
-            self.producer.produce(
-                settings.KAFKA_TOPIC_STREAM_CONTROL,
-                key=str(stream.id),
-                value=command_payload_dict, # Pass dict for Avro serialization
-                on_delivery=kafka_delivery_report
-            )
-            self.producer.poll(0)
-        except Exception as e:
-            print(f"StreamService: Failed to send STOP command to Kafka: {e}")
-            # Log error, but stream is already marked as ended in DB
-            # Maybe raise a warning or specific exception?
-            # For now, just proceed after logging.
-        # --- End Kafka interaction ---
-        
-        return stream
+            try:
+                self.producer.produce(
+                    settings.KAFKA_TOPIC_STREAM_CONTROL,
+                    key=str(stream.id),
+                    value=command_payload_dict, # Pass dict for Avro serialization
+                    on_delivery=kafka_delivery_report
+                )
+                self.producer.poll(0)
+            except Exception as e:
+                # Use structured logging instead of print
+                logger.error(f"Failed to send STOP command to Kafka for stream {stream.id}: {e}")
+                
+                # Implement Outbox Pattern for eventual consistency
+                # Create a record in an outbox table for retry processing
+                try:
+                    from ..models.outbox import OutboxMessage
+                    outbox_msg = OutboxMessage(
+                        id=uuid.uuid4(),
+                        topic=settings.KAFKA_TOPIC_STREAM_CONTROL,
+                        key=str(stream.id),
+                        value=json.dumps(command_payload_dict),
+                        created_at=datetime.utcnow(),
+                        status="PENDING"
+                    )
+                    self.db.add(outbox_msg)
+                    await self.db.commit()
+                    
+                    # Emit metric for monitoring
+                    from ..core.metrics import OUTBOX_MESSAGES
+                    OUTBOX_MESSAGES.inc({"topic": settings.KAFKA_TOPIC_STREAM_CONTROL, "status": "pending"})
+                    
+                    logger.info(f"Created outbox message for failed STOP command for stream {stream.id}")
+                except Exception as outbox_err:
+                    # If outbox also fails, log but don't block the user operation
+                    logger.exception(f"Failed to create outbox message for stream {stream.id}: {outbox_err}")
+                
+                # Record warning in stream history for operations review
+                try:
+                    from ..models.stream import StreamEvent
+                    event = StreamEvent(
+                        id=uuid.uuid4(),
+                        stream_id=stream.id, 
+                        event_type="KAFKA_ERROR",
+                        data={"error": str(e), "command": "STOP"},
+                        created_at=datetime.utcnow()
+                    )
+                    self.db.add(event)
+                    await self.db.commit()
+                except Exception as event_err:
+                    logger.exception(f"Failed to record stream event for {stream.id}: {event_err}")
+            # --- End Kafka interaction ---
+            
+            return stream
     
     async def join_stream(self, stream_id: uuid.UUID, user_id: uuid.UUID) -> StreamViewer:
         """Record a user joining a stream"""
@@ -379,75 +430,75 @@ class StreamService:
         return content_types.get(extension.lower(), 'application/octet-stream')
     
     async def get_user_stream_analytics(self, user_id: uuid.UUID) -> Dict[str, Any]:
-        """Get aggregated analytics for a user's streams."""
-        
-        # Get all streams owned by the user
-        stream_query = select(Stream.id).where(Stream.owner_id == user_id)
-        stream_result = await self.db.execute(stream_query)
-        stream_ids = [row[0] for row in stream_result.all()]
-        
-        if not stream_ids:
-            return {
-                "total_streams": 0,
-                "total_sessions": 0,
-                "total_watch_time_seconds": 0,
-                "total_peak_viewers": 0,
-                "total_unique_viewers": 0,
-                "streams_summary": []
-            }
-        
-        # Aggregate session data
-        session_query = select(
-            func.count(StreamSession.id).label("total_sessions"),
-            func.sum(StreamSession.duration).label("total_duration"),
-            func.sum(StreamSession.peak_viewers).label("total_peak_viewers"),
-            func.sum(StreamSession.total_viewers).label("total_viewers") # Approx unique, needs refinement
-        ).where(StreamSession.stream_id.in_(stream_ids))
-        
-        session_result = await self.db.execute(session_query)
-        session_stats = session_result.first()
-        
-        # Aggregate viewer data (more accurate unique viewers)
-        viewer_query = select(
-            func.count(func.distinct(StreamViewer.user_id)).label("total_unique_viewers"),
-            func.sum(StreamViewer.watch_duration).label("total_watch_time_seconds")
-        ).where(
-            StreamViewer.stream_id.in_(stream_ids),
-            StreamViewer.watch_duration != None
-        )
-        
-        viewer_result = await self.db.execute(viewer_query)
-        viewer_stats = viewer_result.first()
+        with tracer.start_as_current_span("StreamService.get_user_stream_analytics") as span:
+            span.set_attribute("user_id", str(user_id))
+            # Get all streams owned by the user
+            stream_query = select(Stream.id).where(Stream.owner_id == user_id)
+            stream_result = await self.db.execute(stream_query)
+            stream_ids = [row[0] for row in stream_result.all()]
+            
+            if not stream_ids:
+                return {
+                    "total_streams": 0,
+                    "total_sessions": 0,
+                    "total_watch_time_seconds": 0,
+                    "total_peak_viewers": 0,
+                    "total_unique_viewers": 0,
+                    "streams_summary": []
+                }
+            
+            # Aggregate session data
+            session_query = select(
+                func.count(StreamSession.id).label("total_sessions"),
+                func.sum(StreamSession.duration).label("total_duration"),
+                func.sum(StreamSession.peak_viewers).label("total_peak_viewers"),
+                func.sum(StreamSession.total_viewers).label("total_viewers") # Approx unique, needs refinement
+            ).where(StreamSession.stream_id.in_(stream_ids))
+            
+            session_result = await self.db.execute(session_query)
+            session_stats = session_result.first()
+            
+            # Aggregate viewer data (more accurate unique viewers)
+            viewer_query = select(
+                func.count(func.distinct(StreamViewer.user_id)).label("total_unique_viewers"),
+                func.sum(StreamViewer.watch_duration).label("total_watch_time_seconds")
+            ).where(
+                StreamViewer.stream_id.in_(stream_ids),
+                StreamViewer.watch_duration != None
+            )
+            
+            viewer_result = await self.db.execute(viewer_query)
+            viewer_stats = viewer_result.first()
 
-        # Get summary per stream
-        stream_summary_query = select(
-            Stream.id, Stream.title, Stream.created_at,
-            func.count(StreamSession.id).label("session_count"),
-            func.sum(StreamSession.duration).label("total_duration"),
-            func.sum(StreamSession.peak_viewers).label("peak_viewers")
-        ).select_from(Stream).outerjoin(StreamSession, Stream.id == StreamSession.stream_id)\
-        .where(Stream.id.in_(stream_ids))\
-        .group_by(Stream.id, Stream.title, Stream.created_at)\
-        .order_by(Stream.created_at.desc())
-        
-        stream_summary_result = await self.db.execute(stream_summary_query)
-        streams_summary = [\
-            {
-                "id": str(row.id),
-                "title": row.title,
-                "created_at": row.created_at.isoformat(),
-                "session_count": row.session_count or 0,
-                "total_duration_seconds": float(row.total_duration or 0),
-                "peak_viewers": row.peak_viewers or 0
-            }\
-            for row in stream_summary_result.all()\
-        ]
-        
-        return {
-            "total_streams": len(stream_ids),
-            "total_sessions": session_stats.total_sessions or 0,
-            "total_watch_time_seconds": float(viewer_stats.total_watch_time_seconds or 0),
-            "total_peak_viewers": session_stats.total_peak_viewers or 0,
-            "total_unique_viewers": viewer_stats.total_unique_viewers or 0,
-            "streams_summary": streams_summary
-        } 
+            # Get summary per stream
+            stream_summary_query = select(
+                Stream.id, Stream.title, Stream.created_at,
+                func.count(StreamSession.id).label("session_count"),
+                func.sum(StreamSession.duration).label("total_duration"),
+                func.sum(StreamSession.peak_viewers).label("peak_viewers")
+            ).select_from(Stream).outerjoin(StreamSession, Stream.id == StreamSession.stream_id)\
+            .where(Stream.id.in_(stream_ids))\
+            .group_by(Stream.id, Stream.title, Stream.created_at)\
+            .order_by(Stream.created_at.desc())
+            
+            stream_summary_result = await self.db.execute(stream_summary_query)
+            streams_summary = [\
+                {
+                    "id": str(row.id),
+                    "title": row.title,
+                    "created_at": row.created_at.isoformat(),
+                    "session_count": row.session_count or 0,
+                    "total_duration_seconds": float(row.total_duration or 0),
+                    "peak_viewers": row.peak_viewers or 0
+                }\
+                for row in stream_summary_result.all()\
+            ]
+            
+            return {
+                "total_streams": len(stream_ids),
+                "total_sessions": session_stats.total_sessions or 0,
+                "total_watch_time_seconds": float(viewer_stats.total_watch_time_seconds or 0),
+                "total_peak_viewers": session_stats.total_peak_viewers or 0,
+                "total_unique_viewers": viewer_stats.total_unique_viewers or 0,
+                "streams_summary": streams_summary
+            } 

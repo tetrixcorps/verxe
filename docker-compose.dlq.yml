@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  dlq-processor:
+    build:
+      context: ./
+      dockerfile: media_processor_service/Dockerfile.dlq_processor
+    container_name: verxe-dlq-processor
+    restart: unless-stopped
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DLQ_TOPIC_PREFIX=dlq-
+      - OUTPUT_TOPIC_PREFIX=retry-
+      - DLQ_CONSUMER_GROUP_ID=dlq-processor-group
+      - DLQ_MAX_RETRIES=3
+      - DLQ_MIN_BACKOFF_MS=1000
+      - DLQ_MAX_BACKOFF_MS=30000
+      - METRICS_PORT=8001
+      - POLL_TIMEOUT_MS=1000
+      - HEALTH_CHECK_INTERVAL_S=60
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - verxe-network
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: verxe-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - verxe-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: verxe-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - verxe-network
+
+  prometheus:
+    image: prom/prometheus:v2.42.0
+    container_name: verxe-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - verxe-network
+
+  grafana:
+    image: grafana/grafana:9.4.7
+    container_name: verxe-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - verxe-network
+
+networks:
+  verxe-network:
+    driver: bridge
+
+volumes:
+  grafana_data: 
