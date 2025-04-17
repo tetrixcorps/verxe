@@ -1,0 +1,13 @@
+{
+  "namespace": "streaming.status.v1",
+  "name": "StreamStatus",
+  "type": "record",
+  "fields": [
+    {"name": "stream_id", "type": "string", "doc": "UUID of the stream"},
+    {"name": "status", "type": "string", "doc": "Current status (STREAM_STARTED, STREAM_RUNNING_HEALTHY, STREAM_ERROR, STREAM_ENDED, ENDED_EOS)"},
+    {"name": "service_id", "type": "string", "doc": "Identifier of the media processor instance"},
+    {"name": "timestamp", "type": "string", "doc": "ISO 8601 timestamp of the status event"},
+    {"name": "metadata", "type": ["null", {"type": "map", "values": "string"}], "default": null, "doc": "Optional metadata (e.g., error message)"},
+    {"name": "version", "type": "int", "default": 1}
+  ]
+} 

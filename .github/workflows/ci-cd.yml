@@ -101,6 +101,14 @@ jobs:
         context: ./frontend
         push: true
         tags: ${{ secrets.DOCKERHUB_USERNAME }}/verxe-frontend:latest
+        
+    - name: Build and push media-processor
+      uses: docker/build-push-action@v4
+      with:
+        context: . # Assuming Dockerfile.media-processor is in root
+        file: ./Dockerfile.gstreamer # Correct path to the renamed Dockerfile
+        push: true
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/verxe-media-processor:latest
   
   deploy:
     needs: build-and-push
@@ -119,5 +127,4 @@ jobs:
     - name: Deploy to server
       run: |
         scp docker-compose.yml ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/verxe/
-        scp .env ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/verxe/
-        ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cd ~/verxe && docker-compose pull && docker-compose up -d" 
+        ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cd ~/verxe && docker-compose pull && docker-compose down && docker-compose up -d" 

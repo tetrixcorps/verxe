@@ -1,3 +1,6 @@
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
@@ -8,14 +11,45 @@ from .api.api_v1.api import api_router
 from .api.api_v1.websockets import router as websocket_router
 from .core.config import settings
 from .core.rate_limit import RateLimitMiddleware
+from .kafka.consumers import stream_status_consumer_task
+from .core.connection_manager import connection_manager
+from .core.kafka_consumer_manager import kafka_consumer_manager
 
+logger = logging.getLogger(__name__)
+
+# --- Lifespan Management --- 
+kafka_consumer_tasks = []
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Startup --- 
+    logger.info("Application startup...")
+    # Connect to Redis
+    await connection_manager.connect_redis()
+    # Start Kafka consumers (managed globally)
+    # logger.info("Starting Kafka consumer tasks...")
+    # status_task = asyncio.create_task(stream_status_consumer_task()) # Replaced by manager
+    # kafka_consumer_tasks.append(status_task)
+    # Consumer tasks now started on demand by KafkaConsumerManager
+    
+    yield # Application runs here
+    
+    # --- Shutdown --- 
+    logger.info("Application shutdown...")
+    # Shutdown Kafka Consumer Manager (stops all its tasks)
+    await kafka_consumer_manager.shutdown()
+    # Disconnect from Redis
+    await connection_manager.disconnect_redis()
+
+# --- FastAPI App Initialization --- 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Verxe Chat Application API",
     version="1.0.0",
     docs_url=None,
     redoc_url=None,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json"
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    lifespan=lifespan
 )
 
 # Set up CORS

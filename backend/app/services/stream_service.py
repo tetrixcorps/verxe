@@ -1,27 +1,71 @@
 import os
 import json
 import uuid
-import subprocess
 import secrets
-import boto3
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from sqlalchemy import select, update, delete, and_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, joinedload
 from fastapi import HTTPException
+from confluent_kafka import SerializingProducer
+from confluent_kafka.schema_registry import SchemaRegistryClient
+from confluent_kafka.schema_registry.avro import AvroSerializer
+from confluent_kafka.serialization import StringSerializer
+import pathlib # To load schema files
 
 from ..models.stream import Stream, StreamSession, StreamViewer
 from ..models.user import User
-from ..models.room import Room
+from ..models.room import Room, RoomParticipant
 from ..core.config import settings
+
+# --- Kafka Producer Setup with Schema Registry --- 
+
+def load_avro_schema(schema_file: str):
+    # Assumes schemas are in backend/schemas/avro/
+    schema_path = pathlib.Path(__file__).parent.parent / "schemas" / "avro" / schema_file
+    with open(schema_path, 'r') as f:
+        return f.read()
+
+# Configure Schema Registry client
+schema_registry_conf = {'url': settings.SCHEMA_REGISTRY_URL}
+schema_registry_client = SchemaRegistryClient(schema_registry_conf)
+
+# Load schemas
+stream_control_schema = load_avro_schema('stream_control.avsc')
+# Add other schemas if this service produces other types
+
+# Create serializers
+string_serializer = StringSerializer('utf_8')
+avro_control_serializer = AvroSerializer(
+    schema_registry_client,
+    stream_control_schema,
+    lambda obj, ctx: obj # Simple to_dict function
+)
+
+# Configure producer
+producer_config = {
+    'bootstrap.servers': settings.KAFKA_BOOTSTRAP_SERVERS,
+    'client.id': 'backend-stream-service-producer',
+    'key.serializer': string_serializer, # Keys are strings (stream_id)
+    'value.serializer': avro_control_serializer # Use Avro for value
+}
+producer = SerializingProducer(producer_config)
+
+def kafka_delivery_report(err, msg):
+    """ Callback for Kafka message delivery reports """
+    if err is not None:
+        print(f'StreamService: Message delivery failed: {err}')
+    # else:
+    #     print(f'StreamService: Message delivered to {msg.topic()} [{msg.partition()}]')
 
 class StreamService:
     def __init__(self, db: AsyncSession):
         self.db = db
-        # In-memory store of active streams
-        if not hasattr(StreamService, '_active_streams'):
-            StreamService._active_streams: Dict[uuid.UUID, Dict[str, Any]] = {}
+        self.producer = producer # Use the shared producer instance
+        # In-memory store of active streams - REMOVED, state should be derived from DB/Kafka
+        # if not hasattr(StreamService, '_active_streams'):
+        #     StreamService._active_streams: Dict[uuid.UUID, Dict[str, Any]] = {}
     
     async def get_stream(self, stream_id: uuid.UUID) -> Optional[Stream]:
         """Get a stream by ID"""
@@ -37,6 +81,7 @@ class StreamService:
     
     async def get_room_streams(self, room_id: uuid.UUID) -> List[Stream]:
         """Get all streams for a room"""
+        # TODO: Add logic to filter for "live" streams or based on needs
         query = select(Stream).where(Stream.room_id == room_id).order_by(desc(Stream.created_at))
         result = await self.db.execute(query)
         return list(result.scalars().all())
@@ -61,9 +106,9 @@ class StreamService:
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
         
-        # Check if user is room owner or moderator
-        if room.owner_id != user_id:
-            # Check if user is a moderator
+        # Check if user is room owner or moderator (permission to create stream)
+        can_stream = room.owner_id == user_id
+        if not can_stream:
             participant_query = select(RoomParticipant).where(
                 and_(
                     RoomParticipant.room_id == room_id,
@@ -73,9 +118,11 @@ class StreamService:
             )
             participant_result = await self.db.execute(participant_query)
             participant = participant_result.scalars().first()
-            
-            if not participant:
-                raise HTTPException(status_code=403, detail="User does not have permission to stream in this room")
+            if participant:
+                can_stream = True
+
+        if not can_stream:
+            raise HTTPException(status_code=403, detail="User does not have permission to stream in this room")
         
         # Generate a unique stream key
         stream_key = self._generate_stream_key()
@@ -128,22 +175,33 @@ class StreamService:
         self.db.add(session)
         await self.db.commit()
         await self.db.refresh(stream)
-        await self.db.refresh(session)
         
-        # Store active session in memory
-        StreamService._active_streams[stream.id] = {
-            "session_id": session.id,
-            "start_time": datetime.utcnow(),
-            "viewers": set()
+        # --- Send START command to Kafka ---
+        command_payload_dict = {
+            'command': 'START',
+            'stream_id': str(stream.id),
+            'stream_key': stream.stream_key,
+            'rtmp_url': stream.rtmp_url,
+            'is_recorded': stream.is_recorded,
+            'user_id': str(user_id),
+            'room_id': str(stream.room_id),
+            'timestamp': datetime.utcnow().isoformat(),
+            'version': 1
         }
-        
-        # Start GStreamer pipeline if running on server
-        if settings.ENABLE_GSTREAMER:
-            try:
-                self._start_gstreamer_pipeline(stream.stream_key)
-            except Exception as e:
-                # Log the error but don't fail the request
-                print(f"Error starting GStreamer pipeline: {str(e)}")
+
+        try:
+            self.producer.produce(
+                settings.KAFKA_TOPIC_STREAM_CONTROL,
+                key=str(stream.id), # Use stream_id as key for partitioning
+                value=command_payload_dict, # Pass dict for Avro serialization
+                on_delivery=kafka_delivery_report # Use on_delivery with SerializingProducer
+            )
+            self.producer.poll(0)
+        except Exception as e:
+            print(f"StreamService: Failed to send START command to Kafka: {e}")
+            # Decide if we should rollback DB changes or just log
+            raise HTTPException(status_code=500, detail="Failed to initiate stream start")
+        # --- End Kafka interaction ---
         
         return stream
     
@@ -165,43 +223,54 @@ class StreamService:
         # Update stream status
         stream.status = "ended"
         
-        # Get active session
-        active_stream = StreamService._active_streams.get(stream.id)
-        if active_stream:
-            session_id = active_stream["session_id"]
-            
-            # Update session end time and stats
-            session_query = select(StreamSession).where(StreamSession.id == session_id)
-            session_result = await self.db.execute(session_query)
-            session = session_result.scalars().first()
-            
-            if session:
-                end_time = datetime.utcnow()
-                session.ended_at = end_time
-                session.duration = (end_time - session.started_at).total_seconds()
-                session.peak_viewers = len(active_stream["viewers"])
-                session.total_viewers = len(active_stream["viewers"])
-            
-            # Clean up in-memory state
-            del StreamService._active_streams[stream.id]
-        
+        # Find the latest active session for this stream and update it
+        session_query = select(StreamSession).where(
+            and_(
+                StreamSession.stream_id == stream.id,
+                StreamSession.ended_at == None
+            )
+        ).order_by(desc(StreamSession.started_at)) # Get the most recent one
+        session_result = await self.db.execute(session_query)
+        session = session_result.scalars().first()
+
+        if session:
+            end_time = datetime.utcnow()
+            session.ended_at = end_time
+            session.duration = (end_time - session.started_at).total_seconds()
+            # Peak/total viewers should be updated by a separate process consuming media service events
+
         await self.db.commit()
-        if stream.is_recorded and settings.ENABLE_RECORDING:
-            # Upload recording to object storage
-            recording_url = await self._upload_recording(stream.stream_key)
-            if recording_url:
-                stream.recording_url = recording_url
-                await self.db.commit()
-        
-        # Stop GStreamer pipeline if running on server
-        if settings.ENABLE_GSTREAMER:
-            try:
-                self._stop_gstreamer_pipeline(stream.stream_key)
-            except Exception as e:
-                # Log the error but don't fail the request
-                print(f"Error stopping GStreamer pipeline: {str(e)}")
-        
         await self.db.refresh(stream)
+
+        # --- Send STOP command to Kafka ---
+        command_payload_dict = {
+            'command': 'STOP',
+            'stream_id': str(stream.id),
+            'stream_key': stream.stream_key,
+            # Set other fields to None or omit if schema allows
+            'rtmp_url': None,
+            'is_recorded': None,
+            'user_id': str(user_id), # Good to know who stopped it
+            'room_id': str(stream.room_id),
+            'timestamp': datetime.utcnow().isoformat(),
+            'version': 1
+        }
+
+        try:
+            self.producer.produce(
+                settings.KAFKA_TOPIC_STREAM_CONTROL,
+                key=str(stream.id),
+                value=command_payload_dict, # Pass dict for Avro serialization
+                on_delivery=kafka_delivery_report
+            )
+            self.producer.poll(0)
+        except Exception as e:
+            print(f"StreamService: Failed to send STOP command to Kafka: {e}")
+            # Log error, but stream is already marked as ended in DB
+            # Maybe raise a warning or specific exception?
+            # For now, just proceed after logging.
+        # --- End Kafka interaction ---
+        
         return stream
     
     async def join_stream(self, stream_id: uuid.UUID, user_id: uuid.UUID) -> StreamViewer:
@@ -227,11 +296,6 @@ class StreamService:
         await self.db.commit()
         await self.db.refresh(viewer)
         
-        # Update in-memory active viewers
-        active_stream = StreamService._active_streams.get(stream_id)
-        if active_stream:
-            active_stream["viewers"].add(user_id)
-        
         return viewer
     
     async def leave_stream(self, stream_id: uuid.UUID, user_id: uuid.UUID) -> Optional[StreamViewer]:
@@ -243,11 +307,13 @@ class StreamService:
                 StreamViewer.user_id == user_id,
                 StreamViewer.left_at == None
             )
-        )
+        ).order_by(desc(StreamViewer.joined_at)) # Find the latest join event
         result = await self.db.execute(query)
         viewer = result.scalars().first()
         
         if not viewer:
+            # User might not have an active view record if they joined before this tracking was added
+            # Or if they already left. Silently ignore or log?
             return None
         
         # Update leave time and duration
@@ -258,64 +324,7 @@ class StreamService:
         await self.db.commit()
         await self.db.refresh(viewer)
         
-        # Update in-memory active viewers
-        active_stream = StreamService._active_streams.get(stream_id)
-        if active_stream and user_id in active_stream["viewers"]:
-            active_stream["viewers"].remove(user_id)
-        
         return viewer
-    
-    def _start_gstreamer_pipeline(self, stream_key: str) -> None:
-        """Start a GStreamer pipeline for broadcasting"""
-        # Example GStreamer pipeline for streaming webcam to RTMP
-        # This is a simple example - actual implementation would be more complex
-        cmd = [
-            "gst-launch-1.0", "-e",
-            "v4l2src device=/dev/video0 ! video/x-raw,width=1280,height=720 ! videoconvert ! x264enc tune=zerolatency ! flvmux ! rtmpsink location=rtmp://localhost/live/" + stream_key
-        ]
-        
-        # Start process in background
-        subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    
-    def _stop_gstreamer_pipeline(self, stream_key: str) -> None:
-        """Stop a GStreamer pipeline"""
-        # In a real implementation, you would track the process ID and terminate it
-        # This simplified implementation uses pkill to find and kill the process
-        cmd = ["pkill", "-f", stream_key]
-        subprocess.run(cmd)
-    
-    async def _upload_recording(self, stream_key: str) -> Optional[str]:
-        """Upload recording to object storage (S3)"""
-        if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
-            return None
-        
-        try:
-            recording_path = f"{settings.RECORDING_PATH}/{stream_key}.flv"
-            if not os.path.exists(recording_path):
-                return None
-            
-            # Initialize S3 client
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                region_name=settings.AWS_REGION
-            )
-            
-            # Upload file
-            object_key = f"recordings/{stream_key}/{datetime.utcnow().strftime('%Y-%m-%d-%H-%M-%S')}.flv"
-            s3_client.upload_file(recording_path, settings.AWS_BUCKET_NAME, object_key)
-            
-            # Generate URL
-            url = f"https://{settings.AWS_BUCKET_NAME}.s3.amazonaws.com/{object_key}"
-            
-            # Clean up local file
-            os.remove(recording_path)
-            
-            return url
-        except Exception as e:
-            print(f"Error uploading recording: {str(e)}")
-            return None
     
     async def get_presigned_upload_url(self, user_id: uuid.UUID, filename: str) -> Dict[str, str]:
         """Generate a presigned URL for direct upload to S3"""
@@ -323,18 +332,19 @@ class StreamService:
             raise HTTPException(status_code=500, detail="S3 credentials not configured")
         
         try:
-            # Initialize S3 client
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                region_name=settings.AWS_REGION
-            )
-            
+            # Initialize S3 client using configured credentials
+            session_kwargs = {
+                "aws_access_key_id": settings.AWS_ACCESS_KEY_ID,
+                "aws_secret_access_key": settings.AWS_SECRET_ACCESS_KEY,
+                "region_name": settings.AWS_REGION
+            }
+            boto3_session = boto3.Session(**session_kwargs)
+            s3_client = boto3_session.client('s3')
+
             # Generate object key
             ext = os.path.splitext(filename)[1]
             object_key = f"uploads/{user_id}/{uuid.uuid4()}{ext}"
-            
+
             # Generate presigned URL
             presigned_url = s3_client.generate_presigned_url(
                 'put_object',
@@ -345,10 +355,10 @@ class StreamService:
                 },
                 ExpiresIn=3600  # URL valid for 1 hour
             )
-            
+
             return {
                 "upload_url": presigned_url,
-                "download_url": f"https://{settings.AWS_BUCKET_NAME}.s3.amazonaws.com/{object_key}"
+                "download_url": f"https://{settings.AWS_BUCKET_NAME}.s3.{settings.AWS_REGION}.amazonaws.com/{object_key}" # Use region in URL
             }
         except Exception as e:
             print(f"Error generating presigned URL: {str(e)}")

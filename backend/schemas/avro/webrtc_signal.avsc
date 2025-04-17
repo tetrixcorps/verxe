@@ -1,0 +1,14 @@
+{
+  "namespace": "streaming.signaling.v1",
+  "name": "WebRTCSignal",
+  "type": "record",
+  "fields": [
+    {"name": "type", "type": "string", "doc": "Signal type (offer, answer, ice-candidate)"},
+    {"name": "sender_id", "type": "string", "doc": "UUID of the sender (user or media processor)"},
+    {"name": "recipient_id", "type": ["null", "string"], "default": null, "doc": "Intended recipient UUID (null for broadcast)"},
+    {"name": "room_id", "type": "string", "doc": "Room context UUID"},
+    {"name": "payload", "type": "string", "doc": "JSON string containing SDP or ICE candidate details"},
+    {"name": "timestamp", "type": "string", "doc": "ISO 8601 timestamp"},
+    {"name": "version", "type": "int", "default": 1}
+  ]
+} 

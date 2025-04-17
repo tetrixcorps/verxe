@@ -1,0 +1,16 @@
+{
+  "namespace": "streaming.control.v1",
+  "name": "StreamControl",
+  "type": "record",
+  "fields": [
+    {"name": "command", "type": "string", "doc": "Command to execute (START, STOP, QUERY_STATUS)"},
+    {"name": "stream_id", "type": "string", "doc": "UUID of the stream"},
+    {"name": "stream_key", "type": ["null", "string"], "default": null, "doc": "Stream key (needed for START)"},
+    {"name": "rtmp_url", "type": ["null", "string"], "default": null, "doc": "Target RTMP URL (needed for START)"},
+    {"name": "is_recorded", "type": ["null", "boolean"], "default": null, "doc": "Recording flag (needed for START)"},
+    {"name": "user_id", "type": ["null", "string"], "default": null, "doc": "User initiating the command"},
+    {"name": "room_id", "type": ["null", "string"], "default": null, "doc": "Room context"},
+    {"name": "timestamp", "type": "string", "doc": "ISO 8601 timestamp of command creation"},
+    {"name": "version", "type": "int", "default": 1}
+  ]
+} 

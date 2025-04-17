@@ -76,6 +76,18 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: Optional[str] = None
     GOOGLE_REDIRECT_URI: Optional[str] = f"{SERVER_HOST}/api/auth/google/callback" # Default callback URI
 
+    # Kafka settings
+    KAFKA_BOOTSTRAP_SERVERS: str = "kafka:9092"
+    KAFKA_TOPIC_STREAM_CONTROL: str = "stream_control_events"
+    KAFKA_TOPIC_STREAM_STATUS: str = "stream_status_events"
+    KAFKA_TOPIC_WEBRTC_SIGNALING_IN: str = "webrtc_signaling_in"
+    KAFKA_TOPIC_WEBRTC_SIGNALING_OUT: str = "webrtc_signaling_out"
+    # KAFKA_TOPIC_..._DLQ: str = "..._dlq" # Add DLQ topics
+    SCHEMA_REGISTRY_URL: str = "http://schema-registry:8081"
+
+    # Redis settings
+    REDIS_URL: str = "redis://redis:6379/0"
+
     class Config:
         case_sensitive = True
         env_file = ".env"
