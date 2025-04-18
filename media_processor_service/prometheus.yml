@@ -1,0 +1,39 @@
+global:
+  scrape_interval: 15s  # Set the scrape interval to every 15 seconds
+  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: "gstreamer-streaming"
+    scrape_interval: 5s  # More frequent scraping for the GStreamer service
+    static_configs:
+      - targets: ["gstreamer-streaming:9090"]
+        labels:
+          service: "gstreamer-streaming"
+
+  - job_name: "kafka"
+    static_configs:
+      - targets: ["kafka:9997"]
+        labels:
+          service: "kafka"
+
+  # Node exporter for system metrics (if added later)
+  # - job_name: "node-exporter"
+  #   static_configs:
+  #     - targets: ["node-exporter:9100"]
+  #       labels:
+  #         service: "node-metrics"
+
+# Alert manager configuration (if added later)
+# alerting:
+#   alertmanagers:
+#   - static_configs:
+#     - targets:
+#       - alertmanager:9093
+
+# Alert rules (if needed)
+# rule_files:
+#   - "alert_rules.yml" 
